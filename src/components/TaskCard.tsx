@@ -73,7 +73,7 @@ export function TaskCard({ task, currentUserId, onClaim, onStatusChange, onDelet
             <Badge className={`border ${priorityStyles[task.priority]}`}>{task.priority}</Badge>
             <Badge className={`border-transparent ${categoryStyles[task.category]}`}>{task.category}</Badge>
           </div>
-          <div className="mt-4 flex items-center justify-between gap-2">
+          <div className="mt-4 flex flex-wrap items-center justify-between gap-2">
             {task.assigned_name ? (
               <span className="flex min-w-0 items-center gap-1.5 text-xs text-zinc-400">
                 {avatarUrl ? <Image src={avatarUrl} alt="" className="size-6 shrink-0 rounded-full" width={24} height={24} unoptimized /> : <span className="flex size-6 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-fuchsia-400 to-cyan-400 text-[10px] font-bold text-zinc-950">{task.assigned_name.slice(0, 2).toUpperCase()}</span>}
@@ -83,13 +83,13 @@ export function TaskCard({ task, currentUserId, onClaim, onStatusChange, onDelet
             {dueLabel && <span className={`flex items-center gap-1 text-xs ${dueLabel === "Overdue" ? "animate-pulse font-semibold text-red-300" : "text-zinc-500"}`}><Clock3 className="size-3" />{dueLabel}</span>}
           </div>
           {optimisticStatus === "open" && (
-            <Button className="mt-4 h-9 w-full bg-cyan-400 font-semibold text-zinc-950 hover:bg-cyan-300" disabled={!currentUserId} onClick={() => void onClaim(task)}>
+            <Button className="mt-4 h-11 w-full bg-cyan-400 font-semibold text-zinc-950 hover:bg-cyan-300" disabled={!currentUserId} onClick={() => void onClaim(task)}>
               <Check /> Claim Shift
             </Button>
           )}
           {optimisticStatus !== "open" && canEdit && (
             <Select value={optimisticStatus} onValueChange={(value) => void transitionStatus(value as TaskStatus)}>
-              <SelectTrigger className="mt-4 h-9 w-full border-zinc-300 bg-zinc-50 text-xs dark:border-zinc-700 dark:bg-zinc-950/60"><SelectValue /></SelectTrigger>
+              <SelectTrigger className="mt-4 h-11 w-full border-zinc-300 bg-zinc-50 text-xs dark:border-zinc-700 dark:bg-zinc-950/60"><SelectValue /></SelectTrigger>
               <SelectContent>
                 <SelectItem value="claimed">Claimed</SelectItem>
                 <SelectItem value="in_progress">In progress</SelectItem>

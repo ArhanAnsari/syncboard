@@ -13,7 +13,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { AuthProviderBadge, useAuth } from "@/context/AuthContext";
 import { client, DATABASE_ID, EVENTS_TABLE_ID, Query, realtime, tablesDB, type EventDoc, type Models, type TaskCategory, type TaskPriority, type TaskStatus } from "@/lib/appwrite";
 import { Channel } from "appwrite";
-import { AlertTriangle, ArrowLeft, CheckCircle2, Clipboard, Download, Plus, QrCode, Sparkles, Trophy, Volume2, VolumeX, UsersRound, X } from "lucide-react";
+import { AlertTriangle, ArrowLeft, CheckCircle2, Clipboard, Download, Plus, QrCode, Sparkles, Trophy, UsersRound, X } from "lucide-react";
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
 import { Suspense, useEffect, useMemo, useRef, useState } from "react";
@@ -21,7 +21,6 @@ import { toast } from "sonner";
 import { useRealtimeLogs } from "@/hooks/useRealtimeLogs";
 import { useRealtimeTasks } from "@/hooks/useRealtimeTasks";
 import { exportBoardCsv } from "@/lib/exportCsv";
-import { soundManager } from "@/lib/sound";
 
 const columns: { status: TaskStatus; label: string; color: string }[] = [
   { status: "open", label: "Open shifts", color: "bg-cyan-400" },
@@ -43,7 +42,7 @@ function BoardPageContent() {
   const [showEndBroadcast, setShowEndBroadcast] = useState(false);
   const [sessionEnded, setSessionEnded] = useState(false);
   const [redirectCountdown, setRedirectCountdown] = useState(2);
-  const [muted, setMuted] = useState(() => soundManager.isMuted());
+  const [showActivity, setShowActivity] = useState(false);
   const [sosMessage, setSosMessage] = useState("");
   const [title, setTitle] = useState("");
   const [category, setCategory] = useState<TaskCategory>("logistics");
@@ -56,7 +55,6 @@ function BoardPageContent() {
   const tasksInitialized = useRef(false);
   const logsInitialized = useRef(false);
   const previousLogIds = useRef(new Set<string>());
-  const skipNextSosSound = useRef(false);
 
   useEffect(() => {
     if (tasksLoading) return;
@@ -67,7 +65,6 @@ function BoardPageContent() {
     }
     for (const task of tasks) {
       if (task.status === "completed" && previousTaskStatuses.current.get(task.$id) !== "completed") {
-        soundManager.playComplete();
       }
     }
     previousTaskStatuses.current = new Map(tasks.map((task) => [task.$id, task.status]));
@@ -80,33 +77,30 @@ function BoardPageContent() {
       logsInitialized.current = true;
       return;
     }
-    const incomingAlerts = logs.filter((log) => log.is_alert && !previousLogIds.current.has(log.$id));
-    if (incomingAlerts.length > 0 && !skipNextSosSound.current) soundManager.playSOS();
     const incomingResolution = logs.some((log) => (log.action === "SOS_RESOLVED" || log.action_text === "SOS_RESOLVED") && !previousLogIds.current.has(log.$id));
-    if (incomingResolution) soundManager.stop();
+    if (incomingResolution) {
+      setShowActivity(true);
+    }
     if (logs.some((log) => (log.action === "SESSION_ENDED" || log.action_text === "SESSION_ENDED") && !previousLogIds.current.has(log.$id))) {
       toast.error("This broadcast has been ended by the host. Redirecting to home...");
       setSessionEnded(true);
     }
     previousLogIds.current = new Set(logs.map((log) => log.$id));
-    skipNextSosSound.current = false;
   }, [logs, logsLoading]);
 
   useEffect(() => {
     if (!sessionEnded) return;
-    soundManager.stop();
     const timer = window.setInterval(() => {
-      setRedirectCountdown((current) => {
-        if (current <= 1) {
-          window.clearInterval(timer);
-          router.push("/");
-          return 0;
-        }
-        return current - 1;
-      });
+      setRedirectCountdown((current) => Math.max(0, current - 1));
     }, 1000);
     return () => window.clearInterval(timer);
-  }, [router, sessionEnded]);
+  }, [sessionEnded]);
+
+  useEffect(() => {
+    if (sessionEnded && redirectCountdown === 0) {
+      router.push("/");
+    }
+  }, [redirectCountdown, router, sessionEnded]);
 
   useEffect(() => {
     const handleShortcut = (event: KeyboardEvent) => {
@@ -192,11 +186,6 @@ function BoardPageContent() {
   const alerts = latestAlert && (!latestResolution || new Date(latestAlert.created_at) > new Date(latestResolution.created_at)) ? [latestAlert] : [];
   const completedCount = tasks.filter((task) => task.status === "completed").length;
   const completionPercent = tasks.length ? Math.round((completedCount / tasks.length) * 100) : 0;
-  const toggleSound = () => {
-    const next = soundManager.toggleMute();
-    setMuted(next);
-    if (!next) soundManager.playClick();
-  };
   const copyCode = async () => { await navigator.clipboard.writeText(code.toUpperCase()); toast.success("Join code copied"); };
   const submitTask = async () => {
     if (!title.trim() || !user || !event) return;
@@ -205,13 +194,12 @@ function BoardPageContent() {
   };
   const submitSOS = async () => {
     if (!user || !sosMessage.trim()) return;
-    try { skipNextSosSound.current = true; await triggerSOS(sosMessage, user.name || "Volunteer"); soundManager.playSOS(); setSosMessage(""); setShowSOS(false); }
-    catch (error) { skipNextSosSound.current = false; toast.error(error instanceof Error ? error.message : "Could not broadcast the SOS."); }
+    try { await triggerSOS(sosMessage, user.name || "Volunteer"); setSosMessage(""); setShowSOS(false); }
+    catch (error) { toast.error(error instanceof Error ? error.message : "Could not broadcast the SOS."); }
   };
   const submitResolveSOS = async () => {
     if (!user || !event) return;
     try {
-      soundManager.stop();
       await resolveSOS(event.$id, user.name || "Coordinator");
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Could not resolve the SOS.");
@@ -234,28 +222,28 @@ function BoardPageContent() {
   if (!event) return <main className="flex min-h-screen flex-col items-center justify-center gap-4 bg-zinc-50 text-center dark:bg-zinc-950"><p className="text-zinc-700 dark:text-zinc-300">This board could not be found.</p><Link href="/" className="text-cyan-600 hover:underline dark:text-cyan-300">Return home</Link></main>;
 
   return (
-    <main className="min-h-screen bg-zinc-50 text-zinc-900 dark:bg-zinc-950 dark:text-zinc-100">
+    <main className="min-h-screen overflow-x-hidden bg-zinc-50 text-zinc-900 dark:bg-zinc-950 dark:text-zinc-100">
       <SOSBanner alerts={alerts} canResolve={event.owner_id === user?.$id} onResolve={() => void submitResolveSOS()} />
       <header className="border-b border-zinc-200 bg-white/90 backdrop-blur-xl dark:border-zinc-800/80 dark:bg-zinc-950/80">
-        <div className="mx-auto flex max-w-[1600px] items-center justify-between gap-4 px-5 py-4 lg:px-8">
-          <div className="flex min-w-0 items-center gap-3"><Link href="/" aria-label="Back home" className="text-zinc-500 hover:text-zinc-200"><ArrowLeft className="size-5" /></Link><div className="min-w-0"><p className="truncate text-lg font-semibold">{event.name}</p><p className="text-xs text-zinc-500">Operations board</p></div></div>
-          <div className="flex items-center gap-2"><span className="hidden items-center gap-1.5 text-xs text-zinc-500 sm:flex"><UsersRound className="size-3.5 text-emerald-400" />{Math.max(1, presenceIds.size)} live</span><ThemeToggle /><Button variant="ghost" size="icon-sm" aria-label={muted ? "Unmute sounds" : "Mute sounds"} onClick={toggleSound}>{muted ? <VolumeX /> : <Volume2 />}</Button><Button variant="outline" size="sm" onClick={() => { soundManager.playClick(); setShowLeaderboard(true); }}><Trophy /><span className="hidden sm:inline">Top helpers</span></Button><Button variant="outline" size="sm" onClick={() => exportBoardCsv(tasks, logs, event.name)}><Download /><span className="hidden sm:inline">Export</span></Button><Button variant="outline" size="sm" onClick={() => { soundManager.playClick(); setShowQR(true); }}><QrCode /><span className="hidden sm:inline">Invite</span></Button>          {event.owner_id === user?.$id && <Button variant="outline" size="sm" className="border-red-300 text-red-700 hover:bg-red-50 dark:border-red-500/40 dark:text-red-300 dark:hover:bg-red-500/10" onClick={() => { soundManager.playClick(); setShowEndBroadcast(true); }}>End broadcast</Button>}<Button variant="outline" size="sm" onClick={() => void copyCode()}><Clipboard /><span className="hidden sm:inline">Code</span> <span className="font-mono text-cyan-300">{code.toUpperCase()}</span></Button><span className="hidden items-center gap-2 md:flex"><AuthProviderBadge /></span></div>
+        <div className="mx-auto flex max-w-[1600px] flex-wrap items-center justify-between gap-3 px-4 py-3 sm:px-5 sm:py-4 lg:px-8">
+          <div className="flex min-w-0 flex-1 items-center gap-3"><Link href="/" aria-label="Back home" className="shrink-0 text-zinc-500 hover:text-zinc-900 dark:hover:text-zinc-200"><ArrowLeft className="size-5" /></Link><div className="min-w-0"><p className="truncate text-base font-semibold sm:text-lg">{event.name}</p><p className="text-xs text-zinc-500">Operations board</p></div></div>
+          <div className="flex w-full flex-wrap items-center justify-end gap-1.5 sm:w-auto sm:gap-2"><span className="mr-auto flex items-center gap-1.5 text-xs text-zinc-500 sm:mr-0"><UsersRound className="size-3.5 text-emerald-400" />{Math.max(1, presenceIds.size)} live</span><ThemeToggle /><Button variant="outline" size="sm" onClick={() => setShowActivity((current) => !current)} className="lg:hidden">{showActivity ? "Hide feed" : "Activity"}</Button><Button variant="outline" size="sm" onClick={() => setShowLeaderboard(true)}><Trophy /><span className="hidden sm:inline">Top helpers</span></Button><Button variant="outline" size="sm" onClick={() => exportBoardCsv(tasks, logs, event.name)}><Download /><span className="hidden sm:inline">Export</span></Button><Button variant="outline" size="sm" onClick={() => setShowQR(true)}><QrCode /><span className="hidden sm:inline">Invite</span></Button>{event.owner_id === user?.$id && <Button variant="outline" size="sm" className="border-red-300 text-red-700 hover:bg-red-50 dark:border-red-500/40 dark:text-red-300 dark:hover:bg-red-500/10" onClick={() => setShowEndBroadcast(true)}>End broadcast</Button>}<Button variant="outline" size="sm" onClick={() => void copyCode()}><Clipboard /><span className="hidden sm:inline">Code</span> <span className="font-mono text-cyan-600 dark:text-cyan-300">{code.toUpperCase()}</span></Button><span className="hidden items-center gap-2 md:flex"><AuthProviderBadge /></span></div>
         </div>
       </header>
       <div className="mx-auto max-w-[1600px] px-5 py-6 lg:px-8">
-        <div className="mb-5 flex flex-wrap items-end justify-between gap-4"><div><p className="mb-1 flex items-center gap-2 text-sm font-medium text-cyan-300"><Sparkles className="size-4" /> Live coordination</p><h1 className="text-2xl font-semibold tracking-tight sm:text-3xl">Today&apos;s shifts</h1></div>        <div className="flex gap-2"><Button variant="outline" className="border-red-500/40 text-red-300 hover:bg-red-500/10" onClick={() => { soundManager.playClick(); setShowSOS(true); }}><AlertTriangle /> Broadcast SOS</Button><Button onClick={() => { soundManager.playClick(); setShowCreate(true); }} className="bg-cyan-400 font-semibold text-zinc-950 hover:bg-cyan-300"><Plus /><span className="hidden sm:inline">New shift</span></Button></div></div>
+        <div className="mb-5 flex flex-col items-stretch gap-4 sm:flex-row sm:items-end sm:justify-between"><div><p className="mb-1 flex items-center gap-2 text-sm font-medium text-cyan-300"><Sparkles className="size-4" /> Live coordination</p><h1 className="text-2xl font-semibold tracking-tight sm:text-3xl">Today&apos;s shifts</h1></div><div className="flex w-full gap-2 sm:w-auto"><Button variant="outline" className="min-h-11 flex-1 border-red-500/40 text-red-300 hover:bg-red-500/10 sm:flex-none" onClick={() => setShowSOS(true)}><AlertTriangle /> Broadcast SOS</Button><Button onClick={() => setShowCreate(true)} className="min-h-11 flex-1 bg-cyan-400 font-semibold text-zinc-950 hover:bg-cyan-300 sm:flex-none"><Plus /><span className="hidden sm:inline">New shift</span></Button></div></div>
         <div className="mb-5 rounded-xl border border-zinc-200 bg-white px-3 py-2 shadow-sm dark:border-zinc-800/70 dark:bg-zinc-900/40"><div className="mb-2 flex justify-between text-xs text-zinc-500"><span>{completedCount}/{tasks.length} shifts completed</span><span>{completionPercent}%</span></div><div className="h-1.5 overflow-hidden rounded-full bg-zinc-800"><div className="h-full rounded-full bg-gradient-to-r from-cyan-400 to-emerald-400 transition-all duration-500" style={{ width: `${completionPercent}%` }} /></div></div>
         <BoardFilters value={filters} onChange={setFilters} />
         <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_320px]">
-          <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">{columns.map((column) => <div key={column.status} className="min-h-[420px] rounded-2xl border border-zinc-200 bg-zinc-100/70 p-3 dark:border-zinc-800/80 dark:bg-zinc-900/40"><div className="mb-4 flex items-center justify-between px-1"><h2 className="text-sm font-medium text-zinc-700 dark:text-zinc-300">{column.label}</h2><span className={`size-2 rounded-full ${column.color}`} /></div><div className="space-y-3">{grouped[column.status].map((task) => <TaskCard key={task.$id} task={task} currentUserId={user?.$id} onClaim={async (item) => { soundManager.playClaim(); await claimTask(item.$id, user?.$id || "", user?.name || "Volunteer", item.title); }} onStatusChange={async (item, status) => { await updateTaskStatus(item.$id, status, user?.name || "Volunteer", item.title); }} onDelete={(item) => deleteTask(item.$id, user?.name || "Volunteer", item.title)} />)}</div></div>)}</section>
-          <ActivityFeed logs={logs} loading={logsLoading} />
+          <section className="flex snap-x snap-mandatory gap-4 overflow-x-auto pb-4 md:grid md:grid-cols-2 md:overflow-visible md:pb-0 xl:grid-cols-4">{columns.map((column) => <div key={column.status} className="min-h-[420px] min-w-[min(86vw,340px)] snap-start rounded-2xl border border-zinc-200 bg-zinc-100/70 p-3 md:min-w-0 dark:border-zinc-800/80 dark:bg-zinc-900/40"><div className="mb-4 flex items-center justify-between px-1"><h2 className="text-sm font-medium text-zinc-700 dark:text-zinc-300">{column.label}</h2><span className={`size-2 rounded-full ${column.color}`} /></div><div className="space-y-3">{grouped[column.status].map((task) => <TaskCard key={task.$id} task={task} currentUserId={user?.$id} onClaim={(item) => claimTask(item.$id, user?.$id || "", user?.name || "Volunteer", item.title)} onStatusChange={(item, status) => updateTaskStatus(item.$id, status, user?.name || "Volunteer", item.title)} onDelete={(item) => deleteTask(item.$id, user?.name || "Volunteer", item.title)} />)}</div></div>)}</section>
+          <div className={`${showActivity ? "block" : "hidden"} lg:block`}><ActivityFeed logs={logs} loading={logsLoading} /></div>
         </div>
       </div>
       <JoinModalWithQR code={code.toUpperCase()} open={showQR} onClose={() => setShowQR(false)} />
       <LeaderboardModal tasks={tasks} open={showLeaderboard} onClose={() => setShowLeaderboard(false)} />
-      {showCreate && <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4 backdrop-blur-sm dark:bg-black/70" role="dialog" aria-modal="true"><div className="w-full max-w-md rounded-2xl border border-zinc-200 bg-white p-6 text-zinc-900 shadow-xl dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-100"><div className="mb-6 flex justify-between"><div><h2 className="text-lg font-semibold">Create a new shift</h2><p className="mt-1 text-sm text-zinc-500">Give your team a clear next action.</p></div><button onClick={() => setShowCreate(false)} aria-label="Close"><X className="text-zinc-500" /></button></div>      <label className="mb-5 block text-sm text-zinc-700 dark:text-zinc-300">Shift title<Input autoFocus value={title} onChange={(e) => setTitle(e.target.value)} placeholder="e.g. Set up welcome desk" className="mt-2 h-10" /></label><div className="mb-6 grid grid-cols-2 gap-3"><label className="text-sm text-zinc-700 dark:text-zinc-300">Category<Select value={category} onValueChange={(value) => setCategory(value as TaskCategory)}><SelectTrigger className="mt-2 w-full"><SelectValue /></SelectTrigger><SelectContent>{(["logistics", "catering", "tech", "helpdesk"] as TaskCategory[]).map((item) => <SelectItem key={item} value={item}>{item}</SelectItem>)}</SelectContent></Select></label><label className="text-sm text-zinc-700 dark:text-zinc-300">Priority<Select value={priority} onValueChange={(value) => setPriority(value as TaskPriority)}><SelectTrigger className="mt-2 w-full"><SelectValue /></SelectTrigger><SelectContent>{(["low", "medium", "high", "critical"] as TaskPriority[]).map((item) => <SelectItem key={item} value={item}>{item}</SelectItem>)}</SelectContent></Select></label></div><div className="flex justify-end gap-2"><Button variant="ghost" onClick={() => setShowCreate(false)}>Cancel</Button><Button disabled={!title.trim()} onClick={() => void submitTask()} className="bg-cyan-400 text-zinc-950 hover:bg-cyan-300">Create shift</Button></div></div></div>}
-      {showSOS && <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4 backdrop-blur-sm dark:bg-black/70" role="dialog" aria-modal="true"><div className="w-full max-w-md rounded-2xl border border-red-300 bg-white p-6 text-zinc-900 shadow-xl dark:border-red-500/30 dark:bg-zinc-900 dark:text-zinc-100"><div className="mb-5 flex justify-between"><div><h2 className="flex items-center gap-2 text-lg font-semibold       text-red-700 dark:text-red-200"><AlertTriangle className="size-5" /> Broadcast urgent alert</h2><p className="mt-1 text-sm text-zinc-500">Every volunteer on this board will see it immediately.</p></div><button onClick={() => setShowSOS(false)} aria-label="Close"><X className="text-zinc-500" /></button></div><label className="block text-sm text-zinc-700 dark:text-zinc-300">What does the team need to know?<Input autoFocus value={sosMessage} onChange={(e) => setSosMessage(e.target.value)} placeholder="e.g. Medical support needed at entrance" className="mt-2 h-11 border-red-500/30" /></label><Button disabled={!sosMessage.trim()} onClick={() => void submitSOS()} className="mt-5 h-11 w-full bg-red-500 font-semibold text-white hover:bg-red-400">Broadcast SOS</Button></div></div>}
-      {showEndBroadcast && <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4 backdrop-blur-sm dark:bg-black/70" role="dialog" aria-modal="true" aria-labelledby="end-broadcast-title"><div className="w-full max-w-md rounded-2xl border border-red-300 bg-white p-6 text-zinc-900 shadow-xl dark:border-red-500/30 dark:bg-zinc-900 dark:text-zinc-100"><div className="mb-5 flex justify-between"><div><h2 id="end-broadcast-title" className="text-lg font-semibold">End broadcast for everyone?</h2><p className="mt-2 text-sm text-zinc-500">All volunteers will be disconnected and returned to the landing page.</p></div><button onClick={() => setShowEndBroadcast(false)} aria-label="Close"><X className="text-zinc-500" /></button></div><div className="flex justify-end gap-2"><Button variant="ghost" onClick={() => setShowEndBroadcast(false)}>Keep live</Button><Button className="bg-red-500 font-semibold text-white hover:bg-red-400" onClick={() => void submitEndBroadcast()}>End broadcast</Button></div></div></div>}
+      {showCreate && <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4 backdrop-blur-sm dark:bg-black/70" role="dialog" aria-modal="true"><div className="max-h-[90vh] w-[95vw] max-w-lg overflow-y-auto rounded-2xl border border-zinc-200 bg-white p-5 text-zinc-900 shadow-xl dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-100"><div className="mb-6 flex justify-between"><div><h2 className="text-lg font-semibold">Create a new shift</h2><p className="mt-1 text-sm text-zinc-500">Give your team a clear next action.</p></div><button onClick={() => setShowCreate(false)} aria-label="Close"><X className="text-zinc-500" /></button></div>      <label className="mb-5 block text-sm text-zinc-700 dark:text-zinc-300">Shift title<Input autoFocus value={title} onChange={(e) => setTitle(e.target.value)} placeholder="e.g. Set up welcome desk" className="mt-2 h-10" /></label><div className="mb-6 grid grid-cols-2 gap-3"><label className="text-sm text-zinc-700 dark:text-zinc-300">Category<Select value={category} onValueChange={(value) => setCategory(value as TaskCategory)}><SelectTrigger className="mt-2 w-full"><SelectValue /></SelectTrigger><SelectContent>{(["logistics", "catering", "tech", "helpdesk"] as TaskCategory[]).map((item) => <SelectItem key={item} value={item}>{item}</SelectItem>)}</SelectContent></Select></label><label className="text-sm text-zinc-700 dark:text-zinc-300">Priority<Select value={priority} onValueChange={(value) => setPriority(value as TaskPriority)}><SelectTrigger className="mt-2 w-full"><SelectValue /></SelectTrigger><SelectContent>{(["low", "medium", "high", "critical"] as TaskPriority[]).map((item) => <SelectItem key={item} value={item}>{item}</SelectItem>)}</SelectContent></Select></label></div><div className="flex justify-end gap-2"><Button variant="ghost" onClick={() => setShowCreate(false)}>Cancel</Button><Button disabled={!title.trim()} onClick={() => void submitTask()} className="bg-cyan-400 text-zinc-950 hover:bg-cyan-300">Create shift</Button></div></div></div>}
+      {showSOS && <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4 backdrop-blur-sm dark:bg-black/70" role="dialog" aria-modal="true"><div className="max-h-[90vh] w-[95vw] max-w-lg overflow-y-auto rounded-2xl border border-red-300 bg-white p-5 text-zinc-900 shadow-xl dark:border-red-500/30 dark:bg-zinc-900 dark:text-zinc-100"><div className="mb-5 flex justify-between"><div><h2 className="flex items-center gap-2 text-lg font-semibold       text-red-700 dark:text-red-200"><AlertTriangle className="size-5" /> Broadcast urgent alert</h2><p className="mt-1 text-sm text-zinc-500">Every volunteer on this board will see it immediately.</p></div><button onClick={() => setShowSOS(false)} aria-label="Close"><X className="text-zinc-500" /></button></div><label className="block text-sm text-zinc-700 dark:text-zinc-300">What does the team need to know?<Input autoFocus value={sosMessage} onChange={(e) => setSosMessage(e.target.value)} placeholder="e.g. Medical support needed at entrance" className="mt-2 h-11 border-red-500/30" /></label><Button disabled={!sosMessage.trim()} onClick={() => void submitSOS()} className="mt-5 h-11 w-full bg-red-500 font-semibold text-white hover:bg-red-400">Broadcast SOS</Button></div></div>}
+      {showEndBroadcast && <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4 backdrop-blur-sm dark:bg-black/70" role="dialog" aria-modal="true" aria-labelledby="end-broadcast-title"><div className="max-h-[90vh] w-[95vw] max-w-lg overflow-y-auto rounded-2xl border border-red-300 bg-white p-5 text-zinc-900 shadow-xl dark:border-red-500/30 dark:bg-zinc-900 dark:text-zinc-100"><div className="mb-5 flex justify-between"><div><h2 id="end-broadcast-title" className="text-lg font-semibold">End broadcast for everyone?</h2><p className="mt-2 text-sm text-zinc-500">All volunteers will be disconnected and returned to the landing page.</p></div><button onClick={() => setShowEndBroadcast(false)} aria-label="Close"><X className="text-zinc-500" /></button></div><div className="flex justify-end gap-2"><Button variant="ghost" onClick={() => setShowEndBroadcast(false)}>Keep live</Button><Button className="bg-red-500 font-semibold text-white hover:bg-red-400" onClick={() => void submitEndBroadcast()}>End broadcast</Button></div></div></div>}
     </main>
   );
 }
